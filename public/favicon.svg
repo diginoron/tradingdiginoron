@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <linearGradient id="fav-blue" x1="10" y1="15" x2="90" y2="85" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e40af" />
+      <stop offset="50%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+    <linearGradient id="fav-trade" x1="15" y1="85" x2="85" y2="15" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="50%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+  </defs>
+
+  <!-- Dark Foundation Badge for high contrast across all browser tabs (Dark & Light) -->
+  <rect width="100" height="100" rx="24" fill="#0b1329" />
+
+  <!-- Dynamic Intertwined Mobius Trade Loops -->
+  <path
+    d="M 26,68 C 21,50 32,30 48,24 C 62,19 74,27 75,40 C 76,52 64,62 50,65 C 38,67 27,62 26,68 Z"
+    fill="url(#fav-blue)"
+    opacity="0.95"
+  />
+  <path
+    d="M 74,32 C 79,50 68,70 52,76 C 38,81 26,73 25,60 C 24,48 36,38 50,35 C 62,33 73,38 74,32 Z"
+    fill="url(#fav-trade)"
+    opacity="0.9"
+  />
+
+  <!-- Center Diamond Hub -->
+  <path
+    d="M 50,38 L 61,50 L 50,62 L 39,50 Z"
+    fill="#0f172a"
+    stroke="#38bdf8"
+    stroke-width="2.5"
+    stroke-linejoin="round"
+  />
+  <circle cx="50" cy="50" r="3.5" fill="#38bdf8" />
+
+  <!-- Strategic Glowing Data Nodes -->
+  <circle cx="70" cy="28" r="4.5" fill="#38bdf8" stroke="#ffffff" stroke-width="1.5" />
+  <circle cx="30" cy="72" r="4" fill="#10b981" stroke="#ffffff" stroke-width="1.2" />
+  <circle cx="34" cy="30" r="3" fill="#60a5fa" />
+  <circle cx="66" cy="70" r="3" fill="#34d399" />
+</svg>

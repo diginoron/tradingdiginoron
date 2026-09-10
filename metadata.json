@@ -1,0 +1,6 @@
+{
+  "name": "دستیار هوشمند تجارت و تحلیل بین‌الملل UN Comtrade",
+  "description": "دستیار هوشمند تجارت، سامانه نگارش نامه‌های تجاری بین‌المللی با هوش مصنوعی منطبق بر استانداردهای ICC و اتاق بازرگانی بین‌الملل، سورسینگ، مزیت بالاسا و داده‌های گمرکی سازمان ملل متحد.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
