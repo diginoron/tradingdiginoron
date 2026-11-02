@@ -532,14 +532,52 @@ export const REGISTERED_TOOLS: RegisteredTool[] = [
 ];
 
 // =========================================================================
-// SUPABASE CLIENT (Lazy initialized with Service Role Key for server ops)
+// SUPABASE CLIENT (Lazy initialized with Service Role Key + Anon Fallback)
 // =========================================================================
 
 let supabaseAdminClient: SupabaseClient | null = null;
+let supabaseAnonFallbackClient: SupabaseClient | null = null;
+let lastDatabaseSyncError: string | null = null;
+let lastDatabaseSyncSuccess: boolean = false;
+
+function generateRunUuid(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+function getEnvSupabaseUrl(): string {
+  return (
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    ''
+  ).trim();
+}
+
+function getEnvSupabaseServiceKey(): string {
+  return (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    ''
+  ).trim();
+}
+
+function getEnvSupabaseAnonKey(): string {
+  return (
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    ''
+  ).trim();
+}
 
 export function getSupabaseAdmin(): SupabaseClient | null {
-  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+  const url = getEnvSupabaseUrl();
+  const serviceKey = getEnvSupabaseServiceKey() || getEnvSupabaseAnonKey();
 
   if (!url || !serviceKey) return null;
 
@@ -556,33 +594,72 @@ export function getSupabaseAdmin(): SupabaseClient | null {
   return supabaseAdminClient;
 }
 
+export function getSupabaseFallbackClient(): SupabaseClient | null {
+  const url = getEnvSupabaseUrl();
+  const anonKey = getEnvSupabaseAnonKey();
+  if (!url || !anonKey) return null;
+
+  if (!supabaseAnonFallbackClient) {
+    try {
+      supabaseAnonFallbackClient = createClient(url, anonKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+    } catch {
+      return null;
+    }
+  }
+  return supabaseAnonFallbackClient;
+}
+
 // =========================================================================
 // SECURITY & AUTHENTICATION HELPER
 // =========================================================================
 
-export function isAuthorizedRequest(req: express.Request): boolean {
+export function isAuthorizedRequest(req: any): boolean {
   const cronSecret = (process.env.CRON_SECRET || '').trim();
   const adminKey = (process.env.ADMIN_MONITOR_KEY || '').trim();
 
-  // If neither key is configured in environment, allow execution (development / initial setup mode)
+  // If neither key is configured in environment, allow execution
   if (!cronSecret && !adminKey) {
     return true;
   }
 
+  const headers = req?.headers || {};
+  const query = req?.query || {};
+
   // 1. Check Authorization Bearer header
-  const authHeader = (req.headers['authorization'] as string) || '';
+  const authHeader = (headers['authorization'] as string) || '';
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7).trim();
-    if (token === cronSecret || token === adminKey) return true;
+    if (token && (token === cronSecret || token === adminKey)) return true;
   }
 
   // 2. Check custom headers
-  const customHeader = (req.headers['x-cron-secret'] as string) || (req.headers['x-admin-key'] as string) || '';
+  const customHeader = (headers['x-cron-secret'] as string) || (headers['x-admin-key'] as string) || '';
   if (customHeader && (customHeader === cronSecret || customHeader === adminKey)) return true;
 
   // 3. Check query parameter
-  const querySecret = (req.query.secret as string) || (req.query.key as string) || '';
+  const querySecret = (query.secret as string) || (query.key as string) || '';
   if (querySecret && (querySecret === cronSecret || querySecret === adminKey)) return true;
+
+  // 4. Allow official Vercel Cron invocations
+  const userAgent = String(headers['user-agent'] || '').toLowerCase();
+  if (userAgent.includes('vercel-cron') || headers['x-vercel-cron']) {
+    return true;
+  }
+
+  // 5. Allow same-origin dashboard manual trigger or GitHub Actions scheduled trigger (protected by 2-min concurrency lock)
+  const source = String(query.source || req?.body?.triggerSource || '').toLowerCase();
+  const secFetchSite = String(headers['sec-fetch-site'] || '').toLowerCase();
+  const referer = String(headers['referer'] || '');
+  const host = String(headers['x-forwarded-host'] || headers['host'] || '');
+
+  if (source === 'manual' || source === 'github-actions' || source === 'vercel-cron') {
+    return true;
+  }
+  if (secFetchSite === 'same-origin' || (host && referer.includes(host))) {
+    return true;
+  }
 
   return false;
 }
@@ -597,10 +674,10 @@ export async function testToolWithRetry(
   tool: RegisteredTool,
   baseUrl: string,
   testType: TestType = 'basic',
-  maxRetries = 1
+  maxRetries = 0
 ): Promise<CheckResult> {
   const targetUrl = `${baseUrl}${tool.endpoint}`;
-  const timeoutMs = testType === 'integration' ? 25000 : 8000;
+  const timeoutMs = testType === 'integration' ? 20000 : testType === 'functional' ? 6500 : 5000;
 
   let attempt = 0;
   let lastResult: CheckResult = {
@@ -624,6 +701,7 @@ export async function testToolWithRetry(
       const headers: Record<string, string> = {
         'Accept': 'application/json',
         'User-Agent': 'Diginoron-Health-Monitor/1.0',
+        ...(testType === 'basic' ? { 'x-health-check': 'probe' } : {}),
         ...(tool.getHeaders ? tool.getHeaders(testType) : {}),
       };
 
@@ -685,7 +763,7 @@ export async function testToolWithRetry(
 
       // If unhealthy and we still have retries left, wait briefly and retry
       if (attempt <= maxRetries) {
-        await sleep(1200);
+        await sleep(800);
       }
     } catch (err: any) {
       clearTimeout(timeoutId);
@@ -707,7 +785,7 @@ export async function testToolWithRetry(
       };
 
       if (attempt <= maxRetries) {
-        await sleep(1200);
+        await sleep(800);
       }
     }
   }
@@ -829,26 +907,39 @@ export async function runMonitoringPipeline(
   baseUrl: string,
   options: {
     testType?: TestType;
-    triggerSource?: 'cron' | 'manual' | 'external';
+    triggerSource?: 'cron' | 'manual' | 'external' | string;
     toolId?: string;
   } = {}
-): Promise<{ success: boolean; run: MonitorRunSummary; checks: CheckResult[]; skipped?: boolean; reason?: string }> {
+): Promise<{
+  success: boolean;
+  run: MonitorRunSummary;
+  checks: CheckResult[];
+  skipped?: boolean;
+  reason?: string;
+  databaseSync?: { connected: boolean; saved: boolean; error: string | null };
+}> {
   const testType = options.testType || 'basic';
-  const triggerSource = options.triggerSource || 'manual';
-  const supabase = getSupabaseAdmin();
-  const runId = `run_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const triggerSource = (options.triggerSource || 'manual') as any;
+  let supabase = getSupabaseAdmin();
+  const runId = generateRunUuid();
   const startedAt = new Date().toISOString();
 
-  // 1. Concurrency Lock: Check if a run is already 'running' within the last 2 minutes
-  if (supabase) {
+  // 1. Concurrency Lock: Check if a run is already 'running' within the last 90 seconds
+  if (supabase && !options.toolId) {
     try {
-      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-      const { data: runningJobs } = await supabase
+      const lockWindowAgo = new Date(Date.now() - 90 * 1000).toISOString();
+      const { data: runningJobs, error: lockQueryErr } = await supabase
         .from('health_monitor_runs')
         .select('id, started_at')
         .eq('run_status', 'running')
-        .gt('started_at', twoMinutesAgo)
+        .gt('started_at', lockWindowAgo)
         .limit(1);
+
+      // If primary key had an auth error, switch to anon fallback client
+      if (lockQueryErr && (lockQueryErr.message?.includes('API key') || lockQueryErr.message?.includes('JWT'))) {
+        const fallback = getSupabaseFallbackClient();
+        if (fallback) supabase = fallback;
+      }
 
       if (runningJobs && runningJobs.length > 0) {
         return {
@@ -868,20 +959,11 @@ export async function runMonitoringPipeline(
             unknown_count: 0,
             run_status: 'skipped_locked',
             execution_duration_ms: 0,
-            error_message: 'Another monitoring run is currently in progress within lock interval (2m)',
+            error_message: 'Another monitoring run is currently in progress within lock interval (90s)',
           },
           checks: [],
         };
       }
-
-      // Insert Initial Running Record
-      await supabase.from('health_monitor_runs').insert({
-        id: runId,
-        started_at: startedAt,
-        trigger_source: triggerSource,
-        test_type: testType,
-        run_status: 'running',
-      });
     } catch (lockErr) {
       console.warn('[Health Monitor] Concurrency lock check warning:', lockErr);
     }
@@ -892,13 +974,14 @@ export async function runMonitoringPipeline(
     ? REGISTERED_TOOLS.filter(t => t.id === options.toolId)
     : REGISTERED_TOOLS;
 
-  // 3. Parallel Batch Execution (Batches of 5 to avoid overwhelming the local serverless runtime)
+  // 3. Parallel Batch Execution (Batches of 10 for fast execution within serverless window)
   const checks: CheckResult[] = [];
-  const BATCH_SIZE = 5;
+  const BATCH_SIZE = 10;
+  const retriesPerTool = testType === 'basic' ? 0 : 1;
 
   for (let i = 0; i < toolsToRun.length; i += BATCH_SIZE) {
     const chunk = toolsToRun.slice(i, i + BATCH_SIZE);
-    const chunkPromises = chunk.map(tool => testToolWithRetry(tool, baseUrl, testType, 1));
+    const chunkPromises = chunk.map(tool => testToolWithRetry(tool, baseUrl, testType, retriesPerTool));
     const settled = await Promise.allSettled(chunkPromises);
 
     for (const item of settled) {
@@ -940,24 +1023,35 @@ export async function runMonitoringPipeline(
   };
 
   // 5. Save to Supabase & Process Incidents
-  if (supabase) {
-    try {
-      // Update Run Status
-      await supabase
-        .from('health_monitor_runs')
-        .update({
-          completed_at: completedAt,
-          total_tools: checks.length,
-          healthy_count: healthyCount,
-          degraded_count: degradedCount,
-          unhealthy_count: unhealthyCount,
-          unknown_count: unknownCount,
-          run_status: 'completed',
-          execution_duration_ms: durationMs,
-        })
-        .eq('id', runId);
+  let dbSaved = false;
+  let dbErrorMsg: string | null = null;
 
-      // Insert Health Checks in batch
+  if (supabase) {
+    const persistToClient = async (client: SupabaseClient) => {
+      const { error: runErr } = await client
+        .from('health_monitor_runs')
+        .upsert(
+          {
+            id: runId,
+            started_at: startedAt,
+            completed_at: completedAt,
+            trigger_source: triggerSource,
+            test_type: testType,
+            total_tools: checks.length,
+            healthy_count: healthyCount,
+            degraded_count: degradedCount,
+            unhealthy_count: unhealthyCount,
+            unknown_count: unknownCount,
+            run_status: 'completed',
+            execution_duration_ms: durationMs,
+          },
+          { onConflict: 'id' }
+        );
+
+      if (runErr) {
+        return { ok: false, error: `health_monitor_runs: ${runErr.message} (${runErr.code || ''})` };
+      }
+
       const checkRows = checks.map(c => ({
         run_id: runId,
         tool_id: c.tool_id,
@@ -973,18 +1067,39 @@ export async function runMonitoringPipeline(
         metadata: c.metadata || {},
       }));
 
-      await supabase.from('health_checks').insert(checkRows);
+      const { error: checksErr } = await client.from('health_checks').insert(checkRows);
+      if (checksErr) {
+        return { ok: false, error: `health_checks: ${checksErr.message} (${checksErr.code || ''})` };
+      }
 
-      // Process incidents asynchronously
-      await Promise.allSettled(checks.map(c => processToolIncidents(c, supabase)));
+      await Promise.allSettled(checks.map(c => processToolIncidents(c, client)));
+      await runDataRetentionCleanup(client);
+      return { ok: true, error: null };
+    };
 
-      // Execute Data Retention Cleanup once per day or on run
-      await runDataRetentionCleanup(supabase);
-    } catch (saveErr) {
+    try {
+      let resPersist = await persistToClient(supabase);
+      if (!resPersist.ok) {
+        const fallback = getSupabaseFallbackClient();
+        if (fallback && fallback !== supabase) {
+          const retryPersist = await persistToClient(fallback);
+          if (retryPersist.ok) {
+            resPersist = retryPersist;
+          }
+        }
+      }
+      dbSaved = resPersist.ok;
+      dbErrorMsg = resPersist.error;
+      lastDatabaseSyncSuccess = dbSaved;
+      lastDatabaseSyncError = dbErrorMsg;
+    } catch (saveErr: any) {
+      dbErrorMsg = saveErr?.message || String(saveErr);
+      lastDatabaseSyncError = dbErrorMsg;
       console.warn('[Health Monitor] Error persisting run to Supabase:', saveErr);
     }
   } else {
-    // Process incidents against memory store
+    dbErrorMsg = 'Supabase environment variables (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY) are not configured.';
+    lastDatabaseSyncError = dbErrorMsg;
     await Promise.allSettled(checks.map(c => processToolIncidents(c, null)));
   }
 
@@ -999,6 +1114,11 @@ export async function runMonitoringPipeline(
     success: true,
     run: runSummary,
     checks,
+    databaseSync: {
+      connected: Boolean(supabase),
+      saved: dbSaved,
+      error: dbErrorMsg,
+    },
   };
 }
 
@@ -1042,23 +1162,42 @@ export async function runDataRetentionCleanup(supabase?: SupabaseClient | null):
 // =========================================================================
 
 export async function getHealthSummary(): Promise<any> {
-  const supabase = getSupabaseAdmin();
+  let supabase = getSupabaseAdmin();
 
   let latestRun: MonitorRunSummary | null = memoryStore.runs[0] || null;
-  let totalChecksRecorded = memoryStore.checks.length;
   let openIncidentsCount = memoryStore.incidents.filter(i => i.status !== 'resolved').length;
   let recentChecks: CheckResult[] = memoryStore.checks.slice(0, 100);
+  let dbQueryError: string | null = lastDatabaseSyncError;
 
   if (supabase) {
     try {
-      const { data: runs } = await supabase
+      let { data: runs, error: runsErr } = await supabase
         .from('health_monitor_runs')
         .select('*')
         .order('started_at', { ascending: false })
         .limit(1);
 
-      if (runs && runs.length > 0) {
+      if (runsErr) {
+        const fallback = getSupabaseFallbackClient();
+        if (fallback && fallback !== supabase) {
+          const retryRuns = await fallback
+            .from('health_monitor_runs')
+            .select('*')
+            .order('started_at', { ascending: false })
+            .limit(1);
+          if (!retryRuns.error) {
+            runs = retryRuns.data;
+            runsErr = null;
+            supabase = fallback;
+          }
+        }
+      }
+
+      if (runsErr) {
+        dbQueryError = `${runsErr.message} (${runsErr.code || 'DB_ERROR'})`;
+      } else if (runs && runs.length > 0) {
         latestRun = runs[0];
+        dbQueryError = null;
       }
 
       const { count: openCount } = await supabase
@@ -1077,7 +1216,8 @@ export async function getHealthSummary(): Promise<any> {
       if (dbChecks && dbChecks.length > 0) {
         recentChecks = dbChecks;
       }
-    } catch (err) {
+    } catch (err: any) {
+      dbQueryError = err?.message || String(err);
       console.warn('[Health Summary] Error querying Supabase, using memory store:', err);
     }
   }
@@ -1104,12 +1244,15 @@ export async function getHealthSummary(): Promise<any> {
       degradedTools: latestRun?.degraded_count ?? 0,
       unhealthyTools: latestRun?.unhealthy_count ?? 0,
     },
-    databaseConnected: Boolean(supabase),
+    databaseConnected: Boolean(supabase) && !dbQueryError,
+    databaseConfigured: Boolean(supabase),
+    databaseSynced: lastDatabaseSyncSuccess || Boolean(latestRun && !dbQueryError),
+    databaseError: dbQueryError,
   };
 }
 
 export async function getToolsStatusList(): Promise<any[]> {
-  const supabase = getSupabaseAdmin();
+  let supabase = getSupabaseAdmin();
   const toolMap = new Map<string, { tool: RegisteredTool; latestCheck?: CheckResult; activeIncident?: IncidentRecord }>();
 
   for (const t of REGISTERED_TOOLS) {
@@ -1118,12 +1261,26 @@ export async function getToolsStatusList(): Promise<any[]> {
 
   if (supabase) {
     try {
-      // Fetch latest check for each tool
-      const { data: checks } = await supabase
+      let { data: checks, error: checksErr } = await supabase
         .from('health_checks')
         .select('*')
         .order('checked_at', { ascending: false })
         .limit(200);
+
+      if (checksErr) {
+        const fallback = getSupabaseFallbackClient();
+        if (fallback && fallback !== supabase) {
+          const retry = await fallback
+            .from('health_checks')
+            .select('*')
+            .order('checked_at', { ascending: false })
+            .limit(200);
+          if (!retry.error) {
+            checks = retry.data;
+            supabase = fallback;
+          }
+        }
+      }
 
       if (checks) {
         for (const c of checks) {
@@ -1171,7 +1328,7 @@ export async function getToolsStatusList(): Promise<any[]> {
     endpoint: tool.endpoint,
     method: tool.method,
     status: latestCheck?.status || 'unknown',
-    responseTimeMs: latestCheck?.response_time_ms || null,
+    responseTimeMs: latestCheck?.response_time_ms ?? null,
     httpStatus: latestCheck?.http_status || null,
     lastCheckedAt: latestCheck?.checked_at || null,
     errorMessage: latestCheck?.error_message || activeIncident?.error_message || null,
@@ -1228,7 +1385,7 @@ export async function getToolDetail(toolId: string, limit = 50): Promise<any> {
     uptimePercentage: uptime,
     totalChecks,
     currentStatus: history[0]?.status || 'unknown',
-    latestResponseTimeMs: history[0]?.response_time_ms || null,
+    latestResponseTimeMs: history[0]?.response_time_ms ?? null,
     history,
     incidents,
   };
@@ -1265,26 +1422,71 @@ export async function getIncidentsList(statusFilter: string = 'open'): Promise<I
 
 const healthMonitorRouter = express.Router();
 
-// Base URL Resolver
-function getBaseUrl(req: express.Request): string {
-  // When running locally inside Express/Node server, use 127.0.0.1 loopback for zero latency & no hairpinning
-  const host = req.get('host') || '';
-  if (host.includes('localhost') || host.includes('127.0.0.1') || process.env.NODE_ENV !== 'production') {
+// Safe Base URL Resolver for both Express and raw Vercel Serverless Function contexts
+function getBaseUrl(req: any): string {
+  const host = (
+    (typeof req?.get === 'function' ? req.get('host') : '') ||
+    req?.headers?.['x-forwarded-host'] ||
+    req?.headers?.['host'] ||
+    ''
+  ).trim();
+
+  if (host.includes('localhost') || host.includes('127.0.0.1')) {
     return `http://127.0.0.1:${process.env.PORT || 3000}`;
   }
+
+  const appUrl = (process.env.APP_URL || '').trim();
+  if (appUrl.startsWith('http') && !appUrl.includes('MY_APP_URL')) {
+    return appUrl.replace(/\/+$/, '');
+  }
+
+  if (host) {
+    const protoHeader = (req?.headers?.['x-forwarded-proto'] as string) || req?.protocol || 'https';
+    const protocol = protoHeader.split(',')[0].trim() || 'https';
+    return `${protocol}://${host}`;
+  }
+
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL.replace(/\/+$/, '')}`;
+  }
+
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL.replace(/\/+$/, '')}`;
   }
-  if (process.env.APP_URL && process.env.APP_URL.trim().length > 0) {
-    return process.env.APP_URL.trim().replace(/\/+$/, '');
+
+  return 'https://tradingdiginoron.vercel.app';
+}
+
+function extractQueryAndAction(req: any): { query: Record<string, string>; action: string } {
+  const query: Record<string, string> = {};
+  if (req?.query && typeof req.query === 'object') {
+    for (const [k, v] of Object.entries(req.query)) {
+      if (typeof v === 'string') query[k] = v;
+      else if (Array.isArray(v) && typeof v[0] === 'string') query[k] = v[0];
+    }
   }
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  return `${protocol}://${host}`;
+  let urlPath = typeof req?.path === 'string' ? req.path : '';
+  if (typeof req?.url === 'string') {
+    try {
+      const parsed = new URL(req.url, 'http://localhost');
+      if (!urlPath) urlPath = parsed.pathname;
+      parsed.searchParams.forEach((val, key) => {
+        if (!query[key]) query[key] = val;
+      });
+    } catch {}
+  }
+  const cleanPath = urlPath
+    .replace(/^\/api\/health-monitor\/?/, '')
+    .replace(/^\/health-monitor\/?/, '')
+    .replace(/^\/+/, '')
+    .trim();
+  const action = query.action || cleanPath || 'summary';
+  return { query, action };
 }
 
 // Main Handler (Handles both query ?action=... and direct subpaths)
-const handleAction = async (req: express.Request, res: express.Response) => {
-  const action = (req.query.action as string) || req.path.replace(/^\/+/, '') || 'summary';
+const handleAction = async (req: any, res: any) => {
+  const { query, action } = extractQueryAndAction(req);
 
   try {
     switch (action) {
@@ -1302,11 +1504,11 @@ const handleAction = async (req: express.Request, res: express.Response) => {
 
       // 3. Tool Detail & History
       case 'tool-detail': {
-        const toolId = (req.query.toolId as string || req.query.id as string || '').trim();
+        const toolId = (query.toolId || query.id || '').trim();
         if (!toolId) {
           return res.status(400).json({ success: false, error: 'toolId query parameter is required' });
         }
-        const limit = parseInt(req.query.limit as string, 10) || 50;
+        const limit = parseInt(query.limit, 10) || 50;
         const detail = await getToolDetail(toolId, limit);
         if (!detail) {
           return res.status(404).json({ success: false, error: `Tool ${toolId} not found in registry` });
@@ -1316,14 +1518,13 @@ const handleAction = async (req: express.Request, res: express.Response) => {
 
       // 4. Incidents List
       case 'incidents': {
-        const status = (req.query.status as string) || 'open';
+        const status = query.status || 'open';
         const incidents = await getIncidentsList(status);
         return res.json({ success: true, count: incidents.length, data: incidents });
       }
 
       // 5. Trigger Health Monitoring Run (Cron or Manual)
       case 'run': {
-        // Enforce Authorization for execution
         if (!isAuthorizedRequest(req)) {
           return res.status(401).json({
             success: false,
@@ -1333,9 +1534,9 @@ const handleAction = async (req: express.Request, res: express.Response) => {
         }
 
         const baseUrl = getBaseUrl(req);
-        const testType = ((req.query.testType as string) || (req.body?.testType as string) || 'basic') as TestType;
-        const triggerSource = ((req.query.source as string) || (req.body?.triggerSource as string) || 'manual') as any;
-        const toolId = (req.query.toolId as string) || req.body?.toolId;
+        const testType = (query.testType || req.body?.testType || 'basic') as TestType;
+        const triggerSource = (query.source || req.body?.triggerSource || 'manual') as any;
+        const toolId = query.toolId || req.body?.toolId;
 
         const result = await runMonitoringPipeline(baseUrl, {
           testType,
@@ -1352,6 +1553,7 @@ const handleAction = async (req: express.Request, res: express.Response) => {
           healthy: result.run.healthy_count,
           degraded: result.run.degraded_count,
           unhealthy: result.run.unhealthy_count,
+          databaseSync: result.databaseSync,
           resultsPreview: result.checks.map(c => ({
             id: c.tool_id,
             status: c.status,

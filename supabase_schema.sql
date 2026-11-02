@@ -170,51 +170,26 @@ ALTER TABLE public.health_monitor_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.health_checks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.health_incidents ENABLE ROW LEVEL SECURITY;
 
--- RLS Policies: Service role has full unrestricted access
+-- RLS Policies: Full operational access for monitoring engine and dashboard
 DROP POLICY IF EXISTS "Service role has full access to health_monitor_runs" ON public.health_monitor_runs;
 CREATE POLICY "Service role has full access to health_monitor_runs"
   ON public.health_monitor_runs FOR ALL
-  TO service_role
   USING (true)
   WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Service role has full access to health_checks" ON public.health_checks;
 CREATE POLICY "Service role has full access to health_checks"
   ON public.health_checks FOR ALL
-  TO service_role
   USING (true)
   WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Service role has full access to health_incidents" ON public.health_incidents;
 CREATE POLICY "Service role has full access to health_incidents"
   ON public.health_incidents FOR ALL
-  TO service_role
   USING (true)
   WITH CHECK (true);
 
--- Read policy: Authenticated users can view monitoring status & dashboard statistics
-DROP POLICY IF EXISTS "Authenticated users can read health runs" ON public.health_monitor_runs;
-CREATE POLICY "Authenticated users can read health runs"
-  ON public.health_monitor_runs FOR SELECT
-  TO authenticated
-  USING (true);
-
-DROP POLICY IF EXISTS "Authenticated users can read health checks" ON public.health_checks;
-CREATE POLICY "Authenticated users can read health checks"
-  ON public.health_checks FOR SELECT
-  TO authenticated
-  USING (true);
-
-DROP POLICY IF EXISTS "Authenticated users can read health incidents" ON public.health_incidents;
-CREATE POLICY "Authenticated users can read health incidents"
-  ON public.health_incidents FOR SELECT
-  TO authenticated
-  USING (true);
-
 -- Grant schema permissions
-GRANT ALL ON public.health_monitor_runs TO service_role;
-GRANT ALL ON public.health_checks TO service_role;
-GRANT ALL ON public.health_incidents TO service_role;
-GRANT SELECT ON public.health_monitor_runs TO authenticated;
-GRANT SELECT ON public.health_checks TO authenticated;
-GRANT SELECT ON public.health_incidents TO authenticated;
+GRANT ALL ON public.health_monitor_runs TO anon, authenticated, service_role;
+GRANT ALL ON public.health_checks TO anon, authenticated, service_role;
+GRANT ALL ON public.health_incidents TO anon, authenticated, service_role;

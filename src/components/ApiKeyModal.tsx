@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Key, X, Check, AlertCircle, RefreshCw, ShieldCheck, ExternalLink, Mail, Copy, Sparkles, Coins, Globe } from 'lucide-react';
-import { getStoredApiKeys, saveStoredApiKeys, testSubscriptionKey } from '../services/comtradeService';
-import { getStoredNinjaKey, saveStoredNinjaKey, testNinjaKey } from '../services/ninjaService';
+import { getStoredApiKeys, saveStoredApiKeys, testSubscriptionKey, checkServerApiStatus } from '../services/comtradeService';
+import { getStoredNinjaKey, saveStoredNinjaKey, testNinjaKey, checkNinjaStatus } from '../services/ninjaService';
 import { DiginoronLogo } from './DiginoronLogo';
 
 interface ApiKeyModalProps {
@@ -45,6 +45,8 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   } | null>(null);
 
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [serverHasComtradeKey, setServerHasComtradeKey] = useState(false);
+  const [serverHasNinjaKey, setServerHasNinjaKey] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -60,6 +62,14 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       setNinjaTestResult(null);
       setSavedSuccess(false);
       setActiveTab(defaultTab);
+
+      checkServerApiStatus().then(st => {
+        setServerHasComtradeKey(Boolean(st?.hasConfiguredKey));
+      }).catch(() => {});
+
+      checkNinjaStatus().then(st => {
+        setServerHasNinjaKey(Boolean(st?.hasEnvKey));
+      }).catch(() => {});
     }
   }, [isOpen, defaultTab]);
 
@@ -78,7 +88,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
   const handleTestKey = async () => {
     const keyToTest = activeType === 'primary' ? primaryKey : secondaryKey;
-    if (!keyToTest || keyToTest.trim().length === 0) {
+    if ((!keyToTest || keyToTest.trim().length === 0) && !serverHasComtradeKey) {
       setTestResult({
         valid: false,
         message: isFa ? 'لطفا ابتدا کلید را در فیلد مربوطه وارد کنید.' : 'Please enter a subscription key to test.'
@@ -89,7 +99,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     setIsTesting(true);
     setTestResult(null);
     try {
-      const res = await testSubscriptionKey(keyToTest.trim());
+      const res = await testSubscriptionKey((keyToTest || '').trim());
       setTestResult(res);
     } catch (e: any) {
       setTestResult({
@@ -102,7 +112,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   };
 
   const handleTestNinjaKey = async () => {
-    if (!ninjaKey || ninjaKey.trim().length === 0) {
+    if ((!ninjaKey || ninjaKey.trim().length === 0) && !serverHasNinjaKey) {
       setNinjaTestResult({
         valid: false,
         message: isFa ? 'لطفاً کلید API Ninjas را وارد کنید.' : 'Please enter your API Ninjas key.'
@@ -113,7 +123,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     setIsTestingNinja(true);
     setNinjaTestResult(null);
     try {
-      const res = await testNinjaKey(ninjaKey.trim());
+      const res = await testNinjaKey((ninjaKey || '').trim());
       setNinjaTestResult(res);
     } catch (e: any) {
       setNinjaTestResult({
@@ -190,6 +200,16 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
           {activeTab === 'comtrade' ? (
             <>
               {/* UN Comtrade Tab */}
+              {serverHasComtradeKey && (
+                <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 flex items-center gap-2.5 text-xs text-emerald-900">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span className="font-semibold">
+                    {isFa
+                      ? 'کلید اشتراک UN Comtrade در متغیرهای محیطی سرور (Vercel) فعال و متصل است.'
+                      : 'UN Comtrade Subscription Key is configured and active in Server Environment.'}
+                  </span>
+                </div>
+              )}
               <div className="bg-sky-50 border border-sky-200 rounded-xl p-3.5 flex items-start gap-3">
                 <ShieldCheck className="w-4 h-4 text-sky-700 mt-0.5 shrink-0" />
                 <div className="text-xs text-sky-900 space-y-1">
@@ -313,6 +333,16 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
           ) : (
             <>
               {/* API Ninjas Tab */}
+              {serverHasNinjaKey && (
+                <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 flex items-center gap-2.5 text-xs text-emerald-900">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span className="font-semibold">
+                    {isFa
+                      ? 'کلید API Ninjas در متغیرهای محیطی سرور (Vercel) فعال و متصل است.'
+                      : 'API Ninjas Key is configured and active in Server Environment.'}
+                  </span>
+                </div>
+              )}
               <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 flex items-start gap-3">
                 <Coins className="w-4 h-4 text-emerald-700 mt-0.5 shrink-0" />
                 <div className="text-xs text-emerald-900 space-y-1">

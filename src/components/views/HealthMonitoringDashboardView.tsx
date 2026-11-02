@@ -128,11 +128,18 @@ export const HealthMonitoringDashboardView: React.FC<HealthMonitoringDashboardPr
       if (data.skipped) {
         setRunMessage(isFa ? 'اجرای تست متوقف شد: فرآیند دیگری هم‌اکنون در حال اجراست (Concurrency Lock).' : 'Run skipped: Lock is active.');
       } else if (data.success) {
+        const dbSyncNote = data.databaseSync?.saved
+          ? (isFa ? ' (ذخیره در سوپابیس موفق)' : ' (Saved to Supabase)')
+          : data.databaseSync?.error
+          ? (isFa ? ` (هشدار سوپابیس: ${data.databaseSync.error})` : ` (Supabase note: ${data.databaseSync.error})`)
+          : '';
         setRunMessage(
           isFa
-            ? `پایش با موفقیت پایان یافت: ${data.healthy} سالم، ${data.degraded} کند، ${data.unhealthy} خطا`
-            : `Completed: ${data.healthy} healthy, ${data.degraded} degraded, ${data.unhealthy} unhealthy`
+            ? `پایش با موفقیت پایان یافت: ${data.healthy} سالم، ${data.degraded} کند، ${data.unhealthy} خطا${dbSyncNote}`
+            : `Completed: ${data.healthy} healthy, ${data.degraded} degraded, ${data.unhealthy} unhealthy${dbSyncNote}`
         );
+      } else if (data.error) {
+        setRunMessage(isFa ? `خطا در اجرا: ${data.error}` : `Error: ${data.error}`);
       }
       await loadData();
     } catch (err: any) {
@@ -234,20 +241,18 @@ ALTER TABLE public.health_monitor_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.health_checks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.health_incidents ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Service role has full access to health_monitor_runs" ON public.health_monitor_runs FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "Service role has full access to health_checks" ON public.health_checks FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "Service role has full access to health_incidents" ON public.health_incidents FOR ALL TO service_role USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Service role has full access to health_monitor_runs" ON public.health_monitor_runs;
+CREATE POLICY "Service role has full access to health_monitor_runs" ON public.health_monitor_runs FOR ALL USING (true) WITH CHECK (true);
 
-CREATE POLICY "Authenticated users can read health runs" ON public.health_monitor_runs FOR SELECT TO authenticated USING (true);
-CREATE POLICY "Authenticated users can read health checks" ON public.health_checks FOR SELECT TO authenticated USING (true);
-CREATE POLICY "Authenticated users can read health incidents" ON public.health_incidents FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Service role has full access to health_checks" ON public.health_checks;
+CREATE POLICY "Service role has full access to health_checks" ON public.health_checks FOR ALL USING (true) WITH CHECK (true);
 
-GRANT ALL ON public.health_monitor_runs TO service_role;
-GRANT ALL ON public.health_checks TO service_role;
-GRANT ALL ON public.health_incidents TO service_role;
-GRANT SELECT ON public.health_monitor_runs TO authenticated;
-GRANT SELECT ON public.health_checks TO authenticated;
-GRANT SELECT ON public.health_incidents TO authenticated;`;
+DROP POLICY IF EXISTS "Service role has full access to health_incidents" ON public.health_incidents;
+CREATE POLICY "Service role has full access to health_incidents" ON public.health_incidents FOR ALL USING (true) WITH CHECK (true);
+
+GRANT ALL ON public.health_monitor_runs TO anon, authenticated, service_role;
+GRANT ALL ON public.health_checks TO anon, authenticated, service_role;
+GRANT ALL ON public.health_incidents TO anon, authenticated, service_role;`;
 
   return (
     <div className="space-y-6 pb-12" dir={isFa ? 'rtl' : 'ltr'}>

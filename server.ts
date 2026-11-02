@@ -2,8 +2,12 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { app } from './api/index';
+import { healthMonitorRouter } from './api/health-monitor';
 
 const PORT = 3000;
+
+app.use('/api/health-monitor', healthMonitorRouter);
+app.use('/health-monitor', healthMonitorRouter);
 
 // Vite middleware / Static file serving
 async function setupVite() {

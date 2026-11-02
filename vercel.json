@@ -2,7 +2,20 @@
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/*.ts": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
+    {
+      "source": "/api/health-monitor/(.*)",
+      "destination": "/api/health-monitor"
+    },
+    {
+      "source": "/api/health-monitor",
+      "destination": "/api/health-monitor"
+    },
     {
       "source": "/api/(.*)",
       "destination": "/api"
