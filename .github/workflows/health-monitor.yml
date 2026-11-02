@@ -1,0 +1,98 @@
+name: Automated Health Monitoring System (Every 30 Minutes)
+
+on:
+  schedule:
+    # Runs every 30 minutes, 24/7 (Free & unlimited on GitHub Actions)
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Test Type (basic | functional | integration)'
+        required: true
+        default: 'basic'
+        type: choice
+        options:
+          - basic
+          - functional
+          - integration
+      tool_id:
+        description: 'Specific Tool ID to test (leave blank for all 25 tools)'
+        required: false
+        default: ''
+
+concurrency:
+  group: health-monitor-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run-health-checks:
+    name: Execute Automated Health Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Determine Application Base URL
+        id: target
+        run: |
+          # Use APP_URL secret, fallback to VERCEL_URL or default
+          BASE_URL="${{ secrets.APP_URL }}"
+          if [ -z "$BASE_URL" ] && [ -n "${{ secrets.VERCEL_URL }}" ]; then
+            BASE_URL="https://${{ secrets.VERCEL_URL }}"
+          fi
+          if [ -z "$BASE_URL" ]; then
+            echo "ERROR: APP_URL secret is not configured in GitHub Repository Secrets."
+            echo "Please set APP_URL to your deployment domain (e.g. https://your-app.vercel.app)."
+            exit 1
+          fi
+          # Strip trailing slashes
+          BASE_URL="${BASE_URL%/}"
+          echo "url=${BASE_URL}" >> $GITHUB_OUTPUT
+
+      - name: Trigger Automated Health Monitoring API
+        id: monitor_call
+        run: |
+          TEST_TYPE="${{ github.event.inputs.test_type || 'basic' }}"
+          TOOL_ID="${{ github.event.inputs.tool_id || '' }}"
+          TARGET_URL="${{ steps.target.outputs.url }}/api/health-monitor?action=run&source=github-actions&testType=${TEST_TYPE}"
+          
+          if [ -n "$TOOL_ID" ]; then
+            TARGET_URL="${TARGET_URL}&toolId=${TOOL_ID}"
+          fi
+
+          echo "🚀 Sending probe to: ${TARGET_URL}"
+          
+          # Auth header with CRON_SECRET or ADMIN_MONITOR_KEY
+          AUTH_HEADER=""
+          if [ -n "${{ secrets.CRON_SECRET }}" ]; then
+            AUTH_HEADER="Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+          elif [ -n "${{ secrets.ADMIN_MONITOR_KEY }}" ]; then
+            AUTH_HEADER="Authorization: Bearer ${{ secrets.ADMIN_MONITOR_KEY }}"
+          fi
+
+          if [ -n "$AUTH_HEADER" ]; then
+            HTTP_RESPONSE=$(curl -s -S -w "\nHTTP_STATUS:%{http_code}" -X POST "${TARGET_URL}" \
+              -H "${AUTH_HEADER}" \
+              -H "Content-Type: application/json")
+          else
+            HTTP_RESPONSE=$(curl -s -S -w "\nHTTP_STATUS:%{http_code}" -X POST "${TARGET_URL}" \
+              -H "Content-Type: application/json")
+          fi
+
+          BODY=$(echo "$HTTP_RESPONSE" | sed -e '$d')
+          STATUS_CODE=$(echo "$HTTP_RESPONSE" | tail -n1 | cut -d':' -f2)
+
+          echo "HTTP Status Code: ${STATUS_CODE}"
+          echo "Response Body: ${BODY}"
+
+          if [ "$STATUS_CODE" -ne 200 ]; then
+            echo "❌ Health Monitor endpoint returned failure HTTP ${STATUS_CODE}"
+            exit 1
+          fi
+
+          # Verify JSON success flag
+          IS_SUCCESS=$(echo "$BODY" | grep -o '"success":true' || true)
+          if [ -z "$IS_SUCCESS" ]; then
+            echo "⚠️ Health check execution flagged issues or lock"
+          else
+            echo "✅ Health monitoring run finished successfully."
+          fi
